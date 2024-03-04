@@ -33,6 +33,7 @@
 #include "igraph_vector.h"
 
 #include <math.h>
+#include <stdlib.h>
 
 #define MATCHING_DEBUG // TODO: comment out when done debugging
 
@@ -1685,27 +1686,135 @@ static igraph_error_t igraph_i_maximum_matching_unweighted_bloss_aug(igraph_inte
 // 					push PeakL, path(j+1), B, pointer to path(j), false
 // return path
 
-struct igraph_i_disjoint_tree_set {
-    // idk how to represent the tree
-    igraph_vector_int_t micro;
-    igraph_vector_int_t size;
-    igraph_vector_int_t number;
-    igraph_vector_int_list_t node;
-    igraph_matrix_int_t mark;
+// more typical disjoint set implementation used by incremental tree set internally
+struct igraph_i_disjoint_set_node {
+    igraph_integer_t x;
+    igraph_integer_t size;
+    struct igraph_i_disjoint_set_node *parent;
 };
 
-igraph_error_t igraph_i_disjoint_tree_set(struct igraph_i_disjoint_tree_set *T) {
+struct igraph_i_disjoint_set {
+    struct igraph_i_disjoint_set_node *nodes;
+};
+
+
+// elements must be integers 0 to element_count-1
+void igraph_i_disjoint_set_init(struct igraph_i_disjoint_set *T, igraph_integer_t element_count) {
+    T->nodes = (struct igraph_i_disjoint_set_node*) malloc(element_count*sizeof(struct igraph_i_disjoint_set_node));
+    for (int i=0; i < element_count; i++) {
+        T->nodes[i].x = i;
+        T->nodes[i].size = 1;
+        T->nodes[i].parent = NULL;
+    }
+}
+
+// macrosetmake - unnecessary? all elements come in premade singleton sets?
+void igraph_i_disjoint_set_make(struct igraph_i_disjoint_set *T, igraph_integer_t x) {
+}
+
+// macrofind
+igraph_integer_t igraph_i_disjoint_set_find(struct igraph_i_disjoint_set *T, igraph_integer_t x) {
+    struct igraph_i_disjoint_set_node *root = T->nodes + (x*sizeof(struct igraph_i_disjoint_set_node));
+    while (root->parent != NULL) {
+        root = root->parent;
+    }
+
+    struct igraph_i_disjoint_set_node *y = T->nodes + (x*sizeof(struct igraph_i_disjoint_set_node));
+    while (y->parent != NULL) {
+        struct igraph_i_disjoint_set_node *parent = y->parent;
+        y->parent = root;
+        y = parent;
+    }
+
+    return root->x;
+}
+
+// macrounite
+void igraph_i_disjoint_set_unite(struct igraph_i_disjoint_set *T, igraph_integer_t x, igraph_integer_t y) {
+    igraph_integer_t temp;
+    x = igraph_i_disjoint_set_find(T, x);
+    y = igraph_i_disjoint_set_find(T, y);
+
+    if (x != y) {
+        if (T->nodes[x].size < T->nodes[y].size) {
+            temp = x;
+            y = x;
+            x = temp;
+        }
+        T->nodes[y].parent = &T->nodes[x];
+        T->nodes[y].size = T->nodes[x].size + T->nodes[y].size;
+    }
+}
+
+// destroy
+void igraph_i_disjoint_set_destroy(struct igraph_i_disjoint_set *T) {
+    free(T->nodes);
+}
+
+// special set implementation used for blossoms, needed to meet time complexity of maximum matching algorithm
+struct igraph_i_incremental_tree_set_node {
+    igraph_integer_t x;
+    struct igraph_i_incremental_tree_set_node *parent;
+};
+
+struct igraph_i_incremental_tree_set {
+    // idk how to represent the tree
+    struct igraph_i_disjoint_set macro_sets;
+    igraph_vector_int_t micro; //micro set an element belongs to
+    igraph_vector_int_t size; //the number of elements in the given micro set
+    igraph_vector_int_t number; //element's number within its micro set
+    igraph_vector_int_list_t node;
+    igraph_matrix_int_t mark;
+    igraph_matrix_int_t parent; //stores parent of node if parent in same micro set, 0 otherwise
+    igraph_vector_int_t root; //stores the root of each micro set
+
+    igraph_vector_int_t answer_q; //translates between rows of parent matrix and a number
+    igraph_vector_int_t answer_s; //translates between rows of parent mark and a number
+    igraph_vector_int_t answer; //treated as 3d array using igraph_i_incremental_tree_set_answer
+};
+
+void igraph_i_incremental_tree_set_init(struct igraph_i_incremental_tree_set *T) {
     // initialize root node and other sets
-    return IGRAPH_SUCCESS;
+    //
+    // initalize answers array
+
 }
 // grow(T,v,w) add w to tree making v its parent
 // link(T,v) link v to its parent
+void igraph_i_incremental_tree_set_link(struct igraph_i_incremental_tree_set *T, igraph_integer_t v) {
+    MATRIX(T->mark,VECTOR(T->micro)[v],VECTOR(T->number)[v]) = 1;
+}
+// get answers
+igraph_integer_t igraph_i_incremental_tree_set_answer(struct igraph_i_incremental_tree_set *T, igraph_integer_t i, igraph_integer_t j) {
+    return VECTOR(T->answer)[VECTOR(T->answer_q)[i]+VECTOR(T->answer_s)[i]+j];
+}
+// microfind
+igraph_integer_t igraph_i_incremental_tree_set_micro_find(struct igraph_i_incremental_tree_set *T, igraph_integer_t v) {
+    igraph_integer_t i,j,k;
+    i = VECTOR(T->micro)[v];
+    j = VECTOR(T->number)[v];
+    k = igraph_i_incremental_tree_set_answer(T,i,j);
+    if (k == 0) {
+        return VECTOR(T->root)[i];
+    }
+    else if (k > 0) {
+        return VECTOR(*igraph_vector_int_list_get_ptr(&T->node, i))[k];
+    }
+}
 // find(T,v) find the set v belongs to
-//      microfind
-//      macrofind?!
-//      macrounite?!!?!?
-//      macrosetmake?!!?!?!?!??
+igraph_integer_t igraph_i_incremental_tree_set_find(struct igraph_i_incremental_tree_set *T, igraph_integer_t v, igraph_integer_t *result) {
+    igraph_integer_t x = v;
+    if (VECTOR(T->micro)[x] != VECTOR(T->micro)[igraph_i_incremental_tree_set_micro_find(T,x)]) {
+        x = igraph_i_disjoint_set_find(&T->macro_sets, igraph_i_incremental_tree_set_micro_find(T,x));
+        while (VECTOR(T->micro)[x] != VECTOR(T->micro)[igraph_i_incremental_tree_set_micro_find(T,x)]) {
+            igraph_i_disjoint_set_unite(&T->macro_sets, igraph_i_disjoint_set_find(&T->macro_sets, x), x);
+            x = igraph_i_disjoint_set_find(&T->macro_sets, x);
+        }
+    }
+    return igraph_i_incremental_tree_set_micro_find(T,x);
+}
 // destroy(T)
+
 
 #ifdef MATCHING_DEBUG
     #undef MATCHING_DEBUG
